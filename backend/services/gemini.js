@@ -130,7 +130,7 @@ ${fullTranscript}
 
   try {
     const response = await geminiAI.models.generateContent({
-      model: 'gemini-2.5-pro',
+      model: 'gemini-2.5-flash',
       contents: prompt
     });
     let text = (response.text || '').trim();
