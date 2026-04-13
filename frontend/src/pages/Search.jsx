@@ -1,15 +1,33 @@
 import React, { useState, useEffect } from 'react';
 import { Search as SearchIcon, SearchX, X, Calendar, Clock, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { searchRecordings } from '../services/api';
+import { getRecordings, searchRecordings } from '../services/api';
 import { format } from 'date-fns';
 
 const SearchPage = () => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
+  const [recentRecordings, setRecentRecordings] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [searched, setSearched] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const fetchRecentRecordings = async () => {
+      setInitialLoading(true);
+      try {
+        const data = await getRecordings();
+        setRecentRecordings(data.recordings || []);
+      } catch (err) {
+        console.error('Failed to load recent recordings:', err);
+      } finally {
+        setInitialLoading(false);
+      }
+    };
+
+    fetchRecentRecordings();
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -42,6 +60,9 @@ const SearchPage = () => {
     setSearched(false);
   };
 
+  const recordingsToShow = searched ? results : recentRecordings;
+  const showResultsList = recordingsToShow.length > 0;
+
   return (
     <div className="search-page">
       <div className="search-bar">
@@ -61,10 +82,12 @@ const SearchPage = () => {
         )}
       </div>
 
-      {loading ? (
+      {loading || initialLoading ? (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px' }}>
           <Loader2 size={32} className="spinner" color="var(--accent-primary)" />
-          <p style={{ marginTop: '12px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>Searching database...</p>
+          <p style={{ marginTop: '12px', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+            {searched ? 'Searching database...' : 'Loading recent recordings...'}
+          </p>
         </div>
       ) : searched && results.length === 0 ? (
         <div className="empty-state">
@@ -72,12 +95,12 @@ const SearchPage = () => {
           <h3 className="empty-title">No matches found</h3>
           <p className="empty-desc">We couldn't find any recordings matching "{query}". Try a different word.</p>
         </div>
-      ) : searched ? (
+      ) : showResultsList ? (
         <div className="recordings-list">
           <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Found {results.length} results
+            {searched ? `Found ${results.length} results` : `Recent recordings (${recentRecordings.length})`}
           </p>
-          {results.map((res) => (
+          {recordingsToShow.map((res) => (
             <div key={res.id} className="recording-item" onClick={() => navigate(`/recording/${res.id}`)}>
               <div className="recording-item-header">
                 <h3 className="recording-title">{res.title}</h3>
@@ -88,7 +111,9 @@ const SearchPage = () => {
                   </span>
                 </div>
               </div>
-              <p className="recording-summary" style={{ fontSize: '0.8rem' }}>{res.summary}</p>
+              <p className="recording-summary" style={{ fontSize: '0.8rem' }}>
+                {res.summary || res.summaries?.summary || res.summaries?.full_transcript || 'Transcript is still processing.'}
+              </p>
             </div>
           ))}
         </div>

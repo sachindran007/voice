@@ -179,12 +179,63 @@ async function searchRecordings(query) {
   const client = getSupabase();
   if (!client) throw new Error('Supabase not configured');
 
+  const trimmedQuery = query.trim();
+
   const { data, error } = await client.rpc('search_recordings', {
-    search_query: query
+    search_query: trimmedQuery
   });
 
   if (error) throw error;
-  return data;
+
+  // Full-text search does not match incomplete words reliably, so add a
+  // substring fallback over summaries/transcripts for partial queries.
+  const { data: partialMatches, error: partialError } = await client
+    .from('summaries')
+    .select(`
+      summary,
+      full_transcript,
+      recording:recordings!inner (
+        id,
+        title,
+        created_at,
+        duration
+      )
+    `)
+    .or(`summary.ilike.%${trimmedQuery}%,full_transcript.ilike.%${trimmedQuery}%`);
+
+  if (partialError) throw partialError;
+
+  const normalizedFtsResults = (data || []).map((item) => ({
+    ...item,
+    rank: item.rank ?? 1
+  }));
+
+  const fallbackResults = (partialMatches || []).map((item) => ({
+    id: item.recording.id,
+    title: item.recording.title,
+    summary: item.summary,
+    created_at: item.recording.created_at,
+    duration: item.recording.duration,
+    rank: 0.5
+  }));
+
+  const dedupedResults = new Map();
+
+  for (const item of [...normalizedFtsResults, ...fallbackResults]) {
+    if (!item?.id) continue;
+
+    const existing = dedupedResults.get(item.id);
+    if (!existing || (item.rank ?? 0) > (existing.rank ?? 0)) {
+      dedupedResults.set(item.id, item);
+    }
+  }
+
+  return Array.from(dedupedResults.values()).sort((a, b) => {
+    if ((b.rank ?? 0) !== (a.rank ?? 0)) {
+      return (b.rank ?? 0) - (a.rank ?? 0);
+    }
+    return new Date(b.created_at) - new Date(a.created_at);
+  });
 }
 
 /**

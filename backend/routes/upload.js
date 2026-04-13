@@ -9,6 +9,18 @@ const geminiService = require('../services/gemini');
 
 const router = express.Router();
 
+function cleanupLocalFile(filePath) {
+  if (!filePath) return;
+
+  try {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (cleanupErr) {
+    console.warn('Failed to clean up local upload:', cleanupErr.message);
+  }
+}
+
 // ── Multer configuration ────────────────────────────────────────────────────
 const uploadDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -45,6 +57,7 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
 
   const { recordingId, chunkIndex = 0, isLast = 'false' } = req.body;
   const filePath = req.file.path;
+  let shouldDeleteLocalFile = false;
 
   try {
     let recId = recordingId;
@@ -78,6 +91,7 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
         `chunks/${recId}/${req.file.filename}`,
         req.file.mimetype
       );
+      shouldDeleteLocalFile = true;
     } catch (storageErr) {
       console.warn('Storage upload failed, using local URL:', storageErr.message);
     }
@@ -106,9 +120,12 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error('Chunk upload error:', error);
-    // Clean up temp file on error
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     res.status(500).json({ error: error.message });
+  } finally {
+    // Delete the local upload when it is no longer needed.
+    if (shouldDeleteLocalFile || res.statusCode >= 500) {
+      cleanupLocalFile(filePath);
+    }
   }
 });
 
