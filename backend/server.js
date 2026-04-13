@@ -13,17 +13,36 @@ const recordingsRoutes = require('./routes/recordings');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const configuredOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedOrigins = new Set([
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://10.0.2.2:5000',
+  'https://vocalistai.netlify.app',
+  ...configuredOrigins
+]);
+const allowedOriginPatterns = [
+  /^http:\/\/192\.168\./,
+  /^http:\/\/10\./
+];
 
 // ── Middleware ──────────────────────────────────────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({
-  origin: [
-    'http://localhost:5173',  // Vite dev server
-    'http://localhost:3000',  // Alternative
-    'http://10.0.2.2:5000',  // Android emulator -> host
-    /^http:\/\/192\.168\./,  // Local network (for mobile)
-    /^http:\/\/10\./,        // Local network (for mobile)
-  ],
+  origin(origin, callback) {
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.has(origin) || allowedOriginPatterns.some((pattern) => pattern.test(origin))) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
