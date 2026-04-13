@@ -120,8 +120,20 @@ const RecordingDetail = () => {
       {chunks.length > 0 && (
         <div className="card" style={{ marginBottom: '24px', position: 'relative', overflow: 'hidden' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <button className="btn-primary" style={{ width: '56px', height: '56px', borderRadius: '50%', padding: 0 }} onClick={togglePlayback}>
-              {playing ? <Pause size={24} fill="white" /> : <Play size={24} fill="white" style={{ marginLeft: 4 }} />}
+            <button
+              className="btn-primary"
+              style={{
+                width: '56px',
+                height: '56px',
+                borderRadius: '50%',
+                padding: 0,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+              onClick={togglePlayback}
+            >
+              {playing ? <Pause size={24} fill="white" /> : <Play size={24} fill="white" />}
             </button>
             <div>
               <p style={{ fontSize: '0.9rem', fontWeight: '600' }}>Listen to Recording</p>
