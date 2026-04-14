@@ -64,7 +64,7 @@ async function createRecording({ title, duration = 0, userId = 'default' }) {
 /**
  * Insert a chunk record
  */
-async function createChunk({ recordingId, chunkIndex, fileUrl, transcript = '' }) {
+async function createChunk({ recordingId, chunkIndex, fileUrl, duration = 0, transcript = '' }) {
   const client = getSupabase();
   if (!client) throw new Error('Supabase not configured');
 
@@ -74,6 +74,7 @@ async function createChunk({ recordingId, chunkIndex, fileUrl, transcript = '' }
       recording_id: recordingId,
       chunk_index: chunkIndex,
       file_url: fileUrl,
+      duration,
       transcript
     })
     .select()

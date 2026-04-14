@@ -55,7 +55,7 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
     return res.status(400).json({ error: 'No audio file provided' });
   }
 
-  const { recordingId, chunkIndex = 0, isLast = 'false' } = req.body;
+  const { recordingId, chunkIndex = 0, isLast = 'false', duration = 0 } = req.body;
   const filePath = req.file.path;
   let shouldDeleteLocalFile = false;
 
@@ -101,6 +101,7 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
       recordingId: recId,
       chunkIndex: parseInt(chunkIndex),
       fileUrl,
+      duration: Math.max(0, parseInt(duration, 10) || 0),
       transcript
     });
 
@@ -183,7 +184,9 @@ async function generateFinalSummary(recordingId, latestTranscript = null) {
       language
     });
 
-    const totalDuration = chunks.length * 30;
+    const totalDuration = chunks.reduce((sum, chunk) => {
+      return sum + Math.max(0, parseInt(chunk.duration, 10) || 0);
+    }, 0);
     await supabaseService.updateRecordingStatus(recordingId, 'ready', totalDuration);
 
     console.log(`✅ Recording ${recordingId} finalized`);

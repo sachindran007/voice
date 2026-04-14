@@ -8,7 +8,6 @@ const Home = () => {
     isRecording, 
     isProcessing, 
     formattedTime, 
-    chunkCount, 
     startRecording, 
     stopRecording, 
     currentRecordingId,
@@ -33,7 +32,7 @@ const Home = () => {
         
         <div className="timer-section" style={{ textAlign: 'center' }}>
           <div className="timer">{formattedTime}</div>
-          <div className="chunk-counter">{chunkCount} chunks recorded</div>
+          <div className="chunk-counter">{isRecording ? 'Recording in progress' : isProcessing ? 'Uploading full recording' : 'Ready to record'}</div>
         </div>
       </div>
 
@@ -51,15 +50,6 @@ const Home = () => {
         <div className="card-sm badge-error" style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
           <Info size={16} />
           <span>{error}</span>
-        </div>
-      )}
-
-      {!isRecording && !isProcessing && (
-        <div className="card" style={{ marginTop: 'auto' }}>
-          <h3 style={{ fontSize: '1rem', marginBottom: '8px' }}>Pro Tip</h3>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
-            We record in 30-second chunks. Even if your internet drops, your previous chunks are safe!
-          </p>
         </div>
       )}
 

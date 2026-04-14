@@ -14,7 +14,7 @@ function getAI() {
 }
 
 /**
- * Transcribe a single audio chunk
+ * Transcribe a single audio file and translate Tamil speech to English
  * @param {string} filePath - local path to audio file
  * @returns {string} transcript
  */
@@ -37,8 +37,10 @@ async function transcribeChunk(filePath) {
   const mimeType = mimeMap[ext] || 'audio/webm';
 
   const prompt = `
-Transcribe this audio chunk exactly.
-Return only the spoken text.
+Transcribe this audio exactly.
+Return only the transcript text in English.
+If the speaker uses Tamil, translate it to natural English instead of returning Tamil script.
+If the speaker mixes Tamil and English, normalize the final output into English.
 If multiple speakers exist, label them as Speaker 1, Speaker 2.
 Do not summarize.
 If the audio is completely silent or contains zero speech, return exactly: [SILENT]
@@ -65,7 +67,7 @@ If the audio is completely silent or contains zero speech, return exactly: [SILE
       ]
     });
     const text = (response.text || '').trim();
-    console.log(`[Gemini] Result for chunk: "${text}"`);
+    console.log(`[Gemini] Transcript result: "${text}"`);
     return text || '[SILENT]';
   } catch (error) {
     console.error('[Gemini] Transcription error:', error.message);
@@ -112,12 +114,12 @@ async function generateSummary(fullTranscript) {
   console.log(`[Gemini] Generating summary for transcript of length: ${fullTranscript.length}`);
 
   const prompt = `
-Analyze this meeting transcript and generate a valid JSON object.
+Analyze this meeting transcript and generate a valid JSON object in English.
 Do not use markdown fences.
 
 JSON Schema:
 {
-  "summary": "Concise summary",
+  "summary": "Concise English summary",
   "action_items": ["item 1", "item 2"],
   "key_points": ["point 1", "point 2"],
   "sentiment": "positive/neutral/negative",

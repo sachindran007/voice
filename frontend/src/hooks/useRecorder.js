@@ -1,35 +1,26 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { uploadChunk, finalizeRecording } from '../services/api'
-
-const CHUNK_DURATION_MS = 30_000 // 30 seconds
+import { uploadChunk } from '../services/api'
 
 export function useRecorder() {
   const [state, setState] = useState('idle') // idle | recording | processing | error
-  const [elapsed, setElapsed] = useState(0)   // total seconds
-  const [chunkCount, setChunkCount] = useState(0)
+  const [elapsed, setElapsed] = useState(0)
   const [currentRecordingId, setCurrentRecordingId] = useState(null)
   const [error, setError] = useState(null)
-  const [chunkProgress, setChunkProgress] = useState([]) // track chunk upload status
 
   const mediaRecorderRef = useRef(null)
   const streamRef = useRef(null)
   const timerRef = useRef(null)
-  const chunkTimerRef = useRef(null)
   const recordingIdRef = useRef(null)
-  const chunkIndexRef = useRef(0)
-  const isStoppingRef = useRef(false)
+  const startTimeRef = useRef(null)
+  const recordedChunksRef = useRef([])
 
-  // Clean up on unmount
   useEffect(() => {
-    return () => stopAllTimers()
+    return () => {
+      clearInterval(timerRef.current)
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+    }
   }, [])
 
-  function stopAllTimers() {
-    clearInterval(timerRef.current)
-    clearTimeout(chunkTimerRef.current)
-  }
-
-  // ── Detect best supported MIME type ──────────────────────────────────────
   function getSupportedMimeType() {
     const types = [
       'audio/webm;codecs=opus',
@@ -38,84 +29,45 @@ export function useRecorder() {
       'audio/ogg',
       'audio/mp4',
     ]
-    return types.find((t) => MediaRecorder.isTypeSupported(t)) || ''
+
+    return types.find((type) => MediaRecorder.isTypeSupported(type)) || ''
   }
 
-  // ── Send one chunk to backend ─────────────────────────────────────────────
-  async function sendChunk(blob, chunkIndex, isLast = false) {
-    const mimeType = blob.type || 'audio/webm'
-    setChunkProgress((prev) => [...prev, { index: chunkIndex, status: 'uploading' }])
-
-    try {
-      const res = await uploadChunk({
-        blob,
-        recordingId: recordingIdRef.current,
-        chunkIndex,
-        isLast,
-        mimeType
-      })
-
-      // First chunk gives us the recordingId
-      if (!recordingIdRef.current && res.recordingId) {
-        recordingIdRef.current = res.recordingId
-        setCurrentRecordingId(res.recordingId)
-      }
-
-      setChunkProgress((prev) =>
-        prev.map((c) => c.index === chunkIndex ? { ...c, status: 'done' } : c)
-      )
-      setChunkCount((n) => n + 1)
-    } catch (err) {
-      console.error(`Chunk ${chunkIndex} upload failed:`, err)
-      setChunkProgress((prev) =>
-        prev.map((c) => c.index === chunkIndex ? { ...c, status: 'error' } : c)
-      )
-    }
-  }
-
-  // ── Start recording ───────────────────────────────────────────────────────
   const startRecording = useCallback(async () => {
     try {
       setError(null)
-      isStoppingRef.current = false
-      chunkIndexRef.current = 0
-      recordingIdRef.current = null
-      setCurrentRecordingId(null)
-      setChunkCount(0)
-      setChunkProgress([])
       setElapsed(0)
+      setCurrentRecordingId(null)
+      recordingIdRef.current = null
+      recordedChunksRef.current = []
+      startTimeRef.current = Date.now()
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           sampleRate: 16000,
-          channelCount: 1
-        }
+          channelCount: 1,
+        },
       })
+
       streamRef.current = stream
 
       const mimeType = getSupportedMimeType()
-      const mr = new MediaRecorder(stream, mimeType ? { mimeType } : {})
-      mediaRecorderRef.current = mr
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : {})
+      mediaRecorderRef.current = recorder
 
-      // Each 30s dataavailable fires
-      mr.addEventListener('dataavailable', async (e) => {
-        if (e.data && e.data.size > 100) {
-          const idx = chunkIndexRef.current++
-          const isLast = isStoppingRef.current
-          await sendChunk(e.data, idx, isLast)
+      recorder.addEventListener('dataavailable', (event) => {
+        if (event.data && event.data.size > 100) {
+          recordedChunksRef.current.push(event.data)
         }
       })
 
-      // Start recording with 30s time slices
-      mr.start(CHUNK_DURATION_MS)
+      recorder.start()
       setState('recording')
 
-      // Elapsed timer
-      const startTime = Date.now()
       timerRef.current = setInterval(() => {
-        setElapsed(Math.floor((Date.now() - startTime) / 1000))
+        setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000))
       }, 1000)
     } catch (err) {
       setError(err.message || 'Microphone access denied')
@@ -123,34 +75,55 @@ export function useRecorder() {
     }
   }, [])
 
-  // ── Stop recording ────────────────────────────────────────────────────────
   const stopRecording = useCallback(async () => {
-    if (!mediaRecorderRef.current || state !== 'recording') return
+    const recorder = mediaRecorderRef.current
+    if (!recorder || state !== 'recording') return
 
-    isStoppingRef.current = true
-    stopAllTimers()
+    clearInterval(timerRef.current)
     setState('processing')
 
-    // Request last chunk
-    mediaRecorderRef.current.stop()
+    const duration = Math.max(1, Math.round((Date.now() - startTimeRef.current) / 1000))
 
-    // Stop all audio tracks
-    streamRef.current?.getTracks().forEach((t) => t.stop())
+    recorder.addEventListener('stop', async () => {
+      try {
+        const blob = new Blob(recordedChunksRef.current, {
+          type: recorder.mimeType || getSupportedMimeType() || 'audio/webm',
+        })
 
-    // Wait a moment for the last dataavailable to fire, then finalize
-    setTimeout(async () => {
-      if (recordingIdRef.current) {
-        try {
-          await finalizeRecording(recordingIdRef.current)
-        } catch (err) {
-          console.warn('Finalize call failed (may still process):', err)
+        if (blob.size <= 100) {
+          throw new Error('Recording was empty')
         }
+
+        const response = await uploadChunk({
+          blob,
+          recordingId: recordingIdRef.current,
+          chunkIndex: 0,
+          isLast: true,
+          duration,
+          mimeType: blob.type || recorder.mimeType || 'audio/webm',
+        })
+
+        if (response.recordingId) {
+          recordingIdRef.current = response.recordingId
+          setCurrentRecordingId(response.recordingId)
+        }
+
+        setElapsed(duration)
+        setState('idle')
+      } catch (err) {
+        setError(err.message || 'Failed to process recording')
+        setState('error')
+      } finally {
+        streamRef.current?.getTracks().forEach((track) => track.stop())
+        mediaRecorderRef.current = null
+        streamRef.current = null
+        recordedChunksRef.current = []
       }
-      setState('idle')
-    }, 2000)
+    }, { once: true })
+
+    recorder.stop()
   }, [state])
 
-  // ── Format elapsed time ───────────────────────────────────────────────────
   const formatTime = (secs) => {
     const m = Math.floor(secs / 60).toString().padStart(2, '0')
     const s = (secs % 60).toString().padStart(2, '0')
@@ -161,13 +134,11 @@ export function useRecorder() {
     state,
     elapsed,
     formattedTime: formatTime(elapsed),
-    chunkCount,
-    chunkProgress,
     currentRecordingId,
     error,
     startRecording,
     stopRecording,
     isRecording: state === 'recording',
-    isProcessing: state === 'processing'
+    isProcessing: state === 'processing',
   }
 }

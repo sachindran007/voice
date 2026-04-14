@@ -137,7 +137,9 @@ const RecordingDetail = () => {
             </button>
             <div>
               <p style={{ fontSize: '0.9rem', fontWeight: '600' }}>Listen to Recording</p>
-              <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Generated from {chunks.length} chunks</p>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                {chunks.length === 1 ? 'Single continuous recording' : `Built from ${chunks.length} uploaded parts`}
+              </p>
             </div>
           </div>
         </div>
