@@ -84,6 +84,21 @@ async function createChunk({ recordingId, chunkIndex, fileUrl, duration = 0, tra
   return data;
 }
 
+async function updateChunkTranscript(id, transcript) {
+  const client = getSupabase();
+  if (!client) throw new Error('Supabase not configured');
+
+  const { data, error } = await client
+    .from('chunks')
+    .update({ transcript })
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
 /**
  * Save AI summary for a recording
  */
@@ -260,6 +275,7 @@ module.exports = {
   uploadToStorage,
   createRecording,
   createChunk,
+  updateChunkTranscript,
   saveSummary,
   updateRecordingStatus,
   getRecordings,

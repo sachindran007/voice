@@ -4,6 +4,30 @@ const path = require('path');
 
 let ai = null;
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientGeminiError(error) {
+  const message = error?.message || '';
+  return /status:\s*(429|500|502|503|504)\b/i.test(message);
+}
+
+function getMimeTypeFromPath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeMap = {
+    '.webm': 'audio/webm',
+    '.mp4': 'audio/mp4',
+    '.m4a': 'audio/mp4',
+    '.wav': 'audio/wav',
+    '.ogg': 'audio/ogg',
+    '.mp3': 'audio/mpeg',
+    '.aac': 'audio/aac',
+  };
+
+  return mimeMap[ext] || 'audio/webm';
+}
+
 function getAI() {
   if (!ai) {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -18,23 +42,9 @@ function getAI() {
  * @param {string} filePath - local path to audio file
  * @returns {string} transcript
  */
-async function transcribeChunk(filePath) {
+async function transcribeAudioBuffer(fileBuffer, mimeType = 'audio/webm') {
   const geminiAI = getAI();
-
-  const fileData = fs.readFileSync(filePath);
-  const base64Audio = fileData.toString('base64');
-  const ext = path.extname(filePath).toLowerCase();
-
-  const mimeMap = {
-    '.webm': 'audio/webm',
-    '.mp4': 'audio/mp4',
-    '.m4a': 'audio/mp4',
-    '.wav': 'audio/wav',
-    '.ogg': 'audio/ogg',
-    '.mp3': 'audio/mpeg',
-    '.aac': 'audio/aac',
-  };
-  const mimeType = mimeMap[ext] || 'audio/webm';
+  const base64Audio = fileBuffer.toString('base64');
 
   const prompt = `
 Transcribe this audio exactly.
@@ -46,33 +56,83 @@ Do not summarize.
 If the audio is completely silent or contains zero speech, return exactly: [SILENT]
   `;
 
-  try {
-    const response = await geminiAI.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              inlineData: {
-                mimeType,
-                data: base64Audio
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await geminiAI.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Audio
+                }
+              },
+              {
+                text: prompt
               }
-            },
-            {
-              text: prompt
-            }
-          ]
-        }
-      ]
-    });
-    const text = (response.text || '').trim();
-    console.log(`[Gemini] Transcript result: "${text}"`);
-    return text || '[SILENT]';
-  } catch (error) {
-    console.error('[Gemini] Transcription error:', error.message);
-    return '[ERROR]';
+            ]
+          }
+        ]
+      });
+      const text = (response.text || '').trim();
+      console.log(`[Gemini] Transcript result: "${text}"`);
+      return text || '[SILENT]';
+    } catch (error) {
+      const transient = isTransientGeminiError(error);
+      console.error(
+        `[Gemini] Transcription error (attempt ${attempt}/${maxAttempts}):`,
+        error.message
+      );
+
+      if (!transient || attempt === maxAttempts) {
+        return '[ERROR]';
+      }
+
+      const backoffMs = attempt * 1500;
+      console.warn(`[Gemini] Retrying transcription in ${backoffMs}ms`);
+      await sleep(backoffMs);
+    }
   }
+
+  return '[ERROR]';
+}
+
+async function transcribeChunk(filePath) {
+  const fileData = fs.readFileSync(filePath);
+  const mimeType = getMimeTypeFromPath(filePath);
+  return transcribeAudioBuffer(fileData, mimeType);
+}
+
+async function transcribeStoredAudio(fileUrl) {
+  if (!fileUrl) {
+    throw new Error('fileUrl is required');
+  }
+
+  if (/^https?:\/\//i.test(fileUrl)) {
+    const response = await fetch(fileUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch stored audio: ${response.status} ${response.statusText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const fileBuffer = Buffer.from(arrayBuffer);
+    const mimeType = getMimeTypeFromPath(new URL(fileUrl).pathname);
+    return transcribeAudioBuffer(fileBuffer, mimeType);
+  }
+
+  const normalizedPath = fileUrl.replace(/^\/+/, '').replace(/\//g, path.sep);
+  const localPath = path.join(__dirname, '..', normalizedPath);
+
+  if (!fs.existsSync(localPath)) {
+    throw new Error(`Stored local audio not found: ${localPath}`);
+  }
+
+  return transcribeChunk(localPath);
 }
 
 /**
@@ -131,47 +191,73 @@ ${fullTranscript}
   `;
 
   try {
-    const response = await geminiAI.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt
-    });
-    let text = (response.text || '').trim();
+    const maxAttempts = 3;
 
-    // Extra safety: remove potential markdown wrapper
-    text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const response = await geminiAI.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt
+        });
+        let text = (response.text || '').trim();
 
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch (e) {
-      console.warn('[Gemini] JSON parse failed, returning fallback.', e.message);
-      return {
-        summary: fullTranscript.substring(0, 500) + '...',
-        actionItems: [],
-        keyPoints: [],
-        sentiment: 'neutral',
-        language: 'en'
-      };
+        // Extra safety: remove potential markdown wrapper
+        text = text.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+
+        let parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch (e) {
+          console.warn('[Gemini] JSON parse failed, returning fallback.', e.message);
+          return {
+            summary: fullTranscript,
+            actionItems: [],
+            keyPoints: [],
+            sentiment: 'neutral',
+            language: 'en'
+          };
+        }
+
+        return {
+          summary: parsed.summary || 'Summary could not be generated.',
+          actionItems: Array.isArray(parsed.action_items) ? parsed.action_items : [],
+          keyPoints: Array.isArray(parsed.key_points) ? parsed.key_points : [],
+          sentiment: parsed.sentiment || 'neutral',
+          language: parsed.language || 'en'
+        };
+      } catch (error) {
+        const transient = isTransientGeminiError(error);
+        console.error(
+          `[Gemini] Summary generation error (attempt ${attempt}/${maxAttempts}):`,
+          error.message
+        );
+
+        if (!transient || attempt === maxAttempts) {
+          return {
+            summary: fullTranscript,
+            actionItems: [],
+            keyPoints: [],
+            sentiment: 'neutral',
+            language: 'en'
+          };
+        }
+
+        const backoffMs = attempt * 1500;
+        console.warn(`[Gemini] Retrying summary generation in ${backoffMs}ms`);
+        await sleep(backoffMs);
+      }
     }
-
-    return {
-      summary: parsed.summary || 'Summary could not be generated.',
-      actionItems: Array.isArray(parsed.action_items) ? parsed.action_items : [],
-      keyPoints: Array.isArray(parsed.key_points) ? parsed.key_points : [],
-      sentiment: parsed.sentiment || 'neutral',
-      language: parsed.language || 'en'
-    };
   } catch (error) {
     console.error('Summary generation error:', error.message);
-    // Return a basic summary on error
-    return {
-      summary: fullTranscript.substring(0, 200) + (fullTranscript.length > 200 ? '...' : ''),
-      actionItems: [],
-      keyPoints: [],
-      sentiment: 'neutral',
-      language: 'en'
-    };
   }
+
+  return {
+    summary: fullTranscript,
+    actionItems: [],
+    keyPoints: [],
+    sentiment: 'neutral',
+    language: 'en'
+  };
 }
 
 /**
@@ -212,6 +298,7 @@ async function processAllChunks(chunks) {
 
 module.exports = {
   transcribeChunk,
+  transcribeStoredAudio,
   transcribeFile,
   generateSummary,
   processAllChunks

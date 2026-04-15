@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const supabaseService = require('../services/supabase');
 const geminiService = require('../services/gemini');
+const { finalizeRecording } = require('../services/recordingProcessor');
 
 const router = express.Router();
 
@@ -21,7 +22,6 @@ function cleanupLocalFile(filePath) {
   }
 }
 
-// ── Multer configuration ────────────────────────────────────────────────────
 const uploadDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -37,7 +37,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB per chunk
+  limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = ['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/mpeg', 'audio/aac', 'audio/x-m4a'];
     if (allowed.includes(file.mimetype) || file.mimetype.startsWith('audio/')) {
@@ -48,8 +48,6 @@ const upload = multer({
   }
 });
 
-// ── POST /api/upload/chunk ──────────────────────────────────────────────────
-// Upload a single 30-second audio chunk
 router.post('/chunk', upload.single('audio'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No audio file provided' });
@@ -62,7 +60,6 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
   try {
     let recId = recordingId;
 
-    // Create a new recording if no ID provided
     if (!recId) {
       const recording = await supabaseService.createRecording({
         title: `Recording ${new Date().toLocaleDateString('en-IN', {
@@ -73,16 +70,14 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
       recId = recording.id;
     }
 
-    // Transcribe the chunk
     let transcript = '';
     try {
       transcript = await geminiService.transcribeChunk(filePath);
     } catch (transcriptErr) {
       console.error('Chunk transcription failed:', transcriptErr.message);
-      transcript = '[Transcription failed]';
+      transcript = '[ERROR]';
     }
 
-    // Upload to Supabase Storage (if configured) or use local path
     let fileUrl = `/uploads/${req.file.filename}`;
     try {
       const fileBuffer = fs.readFileSync(filePath);
@@ -96,10 +91,9 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
       console.warn('Storage upload failed, using local URL:', storageErr.message);
     }
 
-    // Save chunk to database
     const chunk = await supabaseService.createChunk({
       recordingId: recId,
-      chunkIndex: parseInt(chunkIndex),
+      chunkIndex: parseInt(chunkIndex, 10),
       fileUrl,
       duration: Math.max(0, parseInt(duration, 10) || 0),
       transcript
@@ -111,11 +105,9 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
       chunk: { id: chunk.id, index: chunk.chunk_index, transcript }
     };
 
-    // If this is the last chunk, generate summary
     if (isLast === 'true') {
       response.processing = true;
-      // Pass the current transcript to ensure it's included in summary
-      generateFinalSummary(recId, transcript).catch(console.error);
+      finalizeRecording(recId, transcript).catch(console.error);
     }
 
     res.json(response);
@@ -123,15 +115,12 @@ router.post('/chunk', upload.single('audio'), async (req, res) => {
     console.error('Chunk upload error:', error);
     res.status(500).json({ error: error.message });
   } finally {
-    // Delete the local upload when it is no longer needed.
     if (shouldDeleteLocalFile || res.statusCode >= 500) {
       cleanupLocalFile(filePath);
     }
   }
 });
 
-// ── POST /api/upload/finalize ───────────────────────────────────────────────
-// Force finalize a recording (generate summary from existing chunks)
 router.post('/finalize', async (req, res) => {
   const { recordingId } = req.body;
   if (!recordingId) {
@@ -140,60 +129,10 @@ router.post('/finalize', async (req, res) => {
 
   try {
     res.json({ success: true, message: 'Processing started' });
-    await generateFinalSummary(recordingId);
+    await finalizeRecording(recordingId);
   } catch (error) {
     console.error('Finalize error:', error);
   }
 });
-
-// ── Helper: generate complete summary from chunks ───────────────────────────
-async function generateFinalSummary(recordingId, latestTranscript = null) {
-  try {
-    const recording = await supabaseService.getRecordingById(recordingId);
-    if (!recording) return;
-
-    let chunks = recording.chunks || [];
-    
-    // Build full transcript, ensuring we don't duplicate or miss the latest one
-    let transcriptParts = chunks
-      .sort((a, b) => a.chunk_index - b.chunk_index)
-      .map(c => c.transcript);
-
-    // If we just got a transcript but it's not in the DB yet, add it
-    if (latestTranscript && !transcriptParts.includes(latestTranscript)) {
-      transcriptParts.push(latestTranscript);
-    }
-
-    const fullTranscript = transcriptParts
-      .filter(t => t && t !== '[SILENT]' && t !== '[ERROR]')
-      .join(' ')
-      .trim();
-
-    console.log(`[Summary] Processing transcript for ${recordingId} (Length: ${fullTranscript.length})`);
-
-    const { summary, actionItems, keyPoints, sentiment, language } =
-      await geminiService.generateSummary(fullTranscript);
-
-    await supabaseService.saveSummary({
-      recordingId,
-      fullTranscript,
-      summary,
-      actionItems,
-      keyPoints,
-      sentiment,
-      language
-    });
-
-    const totalDuration = chunks.reduce((sum, chunk) => {
-      return sum + Math.max(0, parseInt(chunk.duration, 10) || 0);
-    }, 0);
-    await supabaseService.updateRecordingStatus(recordingId, 'ready', totalDuration);
-
-    console.log(`✅ Recording ${recordingId} finalized`);
-  } catch (error) {
-    console.error(`❌ Summary generation failed for ${recordingId}:`, error.message);
-    await supabaseService.updateRecordingStatus(recordingId, 'error').catch(() => {});
-  }
-}
 
 module.exports = router;

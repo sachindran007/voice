@@ -1,18 +1,17 @@
 const express = require('express');
 const supabaseService = require('../services/supabase');
+const { retryRecording } = require('../services/recordingProcessor');
 
 const router = express.Router();
 
-// ── GET /api/recordings ─────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
-  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
-  
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+
   const result = await supabaseService.getRecordings({ page, limit });
   res.json(result);
 });
 
-// ── GET /api/recordings/search ──────────────────────────────────────────────
 router.get('/search', async (req, res) => {
   const { q } = req.query;
   if (!q || q.trim().length < 2) {
@@ -23,20 +22,40 @@ router.get('/search', async (req, res) => {
   res.json({ results, query: q, total: results?.length || 0 });
 });
 
-// ── GET /api/recordings/:id ─────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   const recording = await supabaseService.getRecordingById(req.params.id);
   if (!recording) {
     return res.status(404).json({ error: 'Recording not found' });
   }
+
   res.json(recording);
 });
 
-// ── PATCH /api/recordings/:id ───────────────────────────────────────────────
+router.post('/:id/retry', async (req, res) => {
+  const recording = await supabaseService.getRecordingById(req.params.id);
+  if (!recording) {
+    return res.status(404).json({ error: 'Recording not found' });
+  }
+
+  if (!recording.chunks?.length) {
+    return res.status(400).json({ error: 'Recording has no stored chunks to retry' });
+  }
+
+  await supabaseService.updateRecordingStatus(recording.id, 'processing', recording.duration || 0);
+  res.json({ success: true, message: 'Retry started', id: recording.id });
+
+  retryRecording(recording.id).catch(async (error) => {
+    console.error(`Retry failed for recording ${recording.id}:`, error.message);
+    await supabaseService.updateRecordingStatus(recording.id, 'error').catch(() => {});
+  });
+});
+
 router.patch('/:id', async (req, res) => {
   const { title } = req.body;
-  if (!title) return res.status(400).json({ error: 'title is required' });
-  
+  if (!title) {
+    return res.status(400).json({ error: 'title is required' });
+  }
+
   const client = supabaseService.getSupabase();
   const { data, error } = await client
     .from('recordings')
@@ -44,21 +63,25 @@ router.patch('/:id', async (req, res) => {
     .eq('id', req.params.id)
     .select()
     .single();
-  
-  if (error) return res.status(500).json({ error: error.message });
+
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
   res.json(data);
 });
 
-// ── DELETE /api/recordings/:id ──────────────────────────────────────────────
 router.delete('/:id', async (req, res) => {
   await supabaseService.deleteRecording(req.params.id);
   res.json({ success: true, deleted: req.params.id });
 });
 
-// ── GET /api/recordings/:id/status ─────────────────────────────────────────
 router.get('/:id/status', async (req, res) => {
   const recording = await supabaseService.getRecordingById(req.params.id);
-  if (!recording) return res.status(404).json({ error: 'Not found' });
+  if (!recording) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+
   res.json({
     id: recording.id,
     status: recording.status,

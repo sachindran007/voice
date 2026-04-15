@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Play, Pause, Trash2, Calendar, Clock, Edit2, Check, X, Info, FileText, List, Zap, MessageSquare } from 'lucide-react';
-import { getRecording, updateRecording, deleteRecording } from '../services/api';
+import { Play, Pause, Trash2, Calendar, Clock, Edit2, Check, X, FileText, List, Zap, MessageSquare, RefreshCw } from 'lucide-react';
+import { getRecording, updateRecording, deleteRecording, retryRecording } from '../services/api';
 import { format } from 'date-fns';
 
 const RecordingDetail = () => {
@@ -13,11 +13,24 @@ const RecordingDetail = () => {
   const [newTitle, setNewTitle] = useState('');
   const [playing, setPlaying] = useState(false);
   const [audio, setAudio] = useState(null);
+  const [retrying, setRetrying] = useState(false);
 
   useEffect(() => {
     fetchData();
     return () => { if (audio) audio.pause(); };
   }, [id]);
+
+  useEffect(() => {
+    if (recording?.status !== 'processing') {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => {
+      fetchData();
+    }, 4000);
+
+    return () => window.clearInterval(timer);
+  }, [recording?.status, id]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -47,6 +60,18 @@ const RecordingDetail = () => {
         await deleteRecording(id);
         navigate('/history');
       } catch (err) { console.error(err); }
+    }
+  };
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    try {
+      await retryRecording(id);
+      await fetchData();
+    } catch (err) {
+      console.error('Retry failed:', err);
+    } finally {
+      setRetrying(false);
     }
   };
 
@@ -83,6 +108,9 @@ const RecordingDetail = () => {
   if (!recording) return <div className="empty-state"><h3 className="empty-title">Recording not found</h3></div>;
 
   const { chunks = [], summaries = {} } = recording;
+  const formattedTranscript = (summaries.full_transcript || '')
+    .replace(/\s*(Speaker\s+\d+:)/g, '\n$1')
+    .trim();
 
   return (
     <div className="recording-detail page-enter">
@@ -103,6 +131,15 @@ const RecordingDetail = () => {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <h2 className="section-title" style={{ fontSize: '1.4rem' }}>{recording.title}</h2>
               <button onClick={() => setEditingTitle(true)} className="btn-ghost" style={{ opacity: 0.5 }}><Edit2 size={16} /></button>
+              <button
+                onClick={handleRetry}
+                className="btn-ghost"
+                disabled={retrying || recording.status === 'processing'}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                title="Regenerate transcript from saved audio"
+              >
+                <RefreshCw size={16} className={retrying || recording.status === 'processing' ? 'spinner' : ''} />
+              </button>
             </div>
           )}
           <button className="btn-danger" style={{ padding: '8px', borderRadius: 'var(--radius-md)' }} onClick={handleDelete}>
@@ -113,9 +150,22 @@ const RecordingDetail = () => {
         <div className="recording-meta" style={{ marginTop: '12px' }}>
           <span className="recording-meta-item"><Calendar size={14} /> {format(new Date(recording.created_at), 'dd MMMM yyyy, HH:mm')}</span>
           <span className="recording-meta-item"><Clock size={14} /> {Math.floor((recording.duration || 0) / 60)}m {(recording.duration || 0) % 60}s</span>
+          <span className={`badge badge-${recording.status || 'processing'}`}>
+            <div className="badge-dot"></div>
+            {recording.status || 'processing'}
+          </span>
           <span className={`sentiment sentiment-${summaries.sentiment || 'neutral'}`}>{summaries.sentiment || 'Neutral'}</span>
         </div>
       </div>
+
+      {recording.status === 'error' && (
+        <div className="card-sm badge-error" style={{ marginBottom: '24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+          <span>Transcription failed temporarily. Retry this recording to run Gemini again on the saved audio chunks.</span>
+          <button onClick={handleRetry} className="btn-ghost" disabled={retrying}>
+            <RefreshCw size={16} className={retrying ? 'spinner' : ''} />
+          </button>
+        </div>
+      )}
 
       {chunks.length > 0 && (
         <div className="card" style={{ marginBottom: '24px', position: 'relative', overflow: 'hidden' }}>
@@ -186,7 +236,7 @@ const RecordingDetail = () => {
         <div className="detail-section">
           <h3 className="detail-section-title"><FileText size={14} /> Full Transcript</h3>
           <div className="transcript-text">
-            {summaries.full_transcript}
+            {formattedTranscript}
           </div>
         </div>
       )}

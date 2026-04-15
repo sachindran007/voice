@@ -66,6 +66,10 @@ export async function deleteRecording(id) {
   return api.delete(`/recordings/${id}`)
 }
 
+export async function retryRecording(id) {
+  return api.post(`/recordings/${id}/retry`)
+}
+
 export async function checkHealth() {
   return api.get('/health')
 }
